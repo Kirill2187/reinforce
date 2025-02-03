@@ -13,7 +13,7 @@ def prepare_messages(batch, tokenizer):
     return list(map(lambda x: tokenizer.apply_chat_template(x, tokenize=False), messages))
 
 
-def process_batch(tokenizer, model, ref_model, reward_model, messages, device, gen_length=256):
+def process_batch(tokenizer, model, ref_model, reward_model, messages, device, max_completion_length=512):
     tokenized = tokenizer(messages, return_tensors="pt", padding=True).to(device)
     prompt_length = tokenized["input_ids"].shape[1]
     # Удалим особо длинные промпты чтобы избежать ООМ
@@ -22,7 +22,7 @@ def process_batch(tokenizer, model, ref_model, reward_model, messages, device, g
     
     outputs = model.generate(
         **tokenized,
-        max_length=tokenized["input_ids"].shape[1] + gen_length,
+        max_length=tokenized["input_ids"].shape[1] + max_completion_length,
         do_sample=True,
         top_k=50,
         top_p=0.95
@@ -58,7 +58,7 @@ def process_batch(tokenizer, model, ref_model, reward_model, messages, device, g
     return outputs, sampled_log_probs, kl, rewards
 
 
-def run_validation(val_loader, tokenizer, model, ref_model, reward_model, device, episode):
+def run_validation(val_loader, tokenizer, model, ref_model, reward_model, device, episode, max_completion_length=512):
     total_reward = 0.0
     total_kl = 0.0
     count = 0
@@ -68,7 +68,7 @@ def run_validation(val_loader, tokenizer, model, ref_model, reward_model, device
     with torch.no_grad():
         for val_batch in tqdm(val_loader, desc="Validation"):
             messages = prepare_messages(val_batch, tokenizer)
-            outputs, _, kl_val, rewards_val = process_batch(tokenizer, model, ref_model, reward_model, messages, device)
+            outputs, _, kl_val, rewards_val = process_batch(tokenizer, model, ref_model, reward_model, messages, device, max_completion_length)
             if outputs is None:
                 continue
             total_reward += rewards_val.mean().item()
@@ -95,6 +95,7 @@ def reinforce_finetune(
     reward_model_name: str = "flypew/reward_model",
     train_dataset: Dataset = None,
     val_dataset: Dataset = None,
+    max_completion_length: int = 512,
     batch_size: int = 2,
     val_batch_size: int = 2,
     gradient_accumulation_steps: int = 32,
@@ -105,7 +106,7 @@ def reinforce_finetune(
     wandb_api_key: str = None,
     wandb_project: str = None,
     hf_token: str = None,
-    hf_model_id: str = "flypew/rlhf_model"
+    hf_model_id: str = "flypew/rlhf_model",
 ):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     tokenizer = AutoTokenizer.from_pretrained(model_name, padding_side="left")
@@ -144,7 +145,7 @@ def reinforce_finetune(
         
         messages = prepare_messages(batch, tokenizer)
         
-        outputs, sampled_log_probs, kl, rewards = process_batch(tokenizer, model, ref_model, reward_model, messages, device)
+        outputs, sampled_log_probs, kl, rewards = process_batch(tokenizer, model, ref_model, reward_model, messages, device, max_completion_length)
         if outputs is None:
             print("Skipping batch due to excessive length")
             continue
@@ -179,7 +180,7 @@ def reinforce_finetune(
             optimizer.zero_grad()
 
         if (step + 1) % validate_every == 0:
-            run_validation(val_loader, tokenizer, model, ref_model, reward_model, device, episode)
+            run_validation(val_loader, tokenizer, model, ref_model, reward_model, device, episode, max_completion_length)
 
         print('-' * 50)
         
