@@ -24,7 +24,7 @@ def process_batch(tokenizer, model, ref_model, reward_model, messages, device, g
         top_k=50,
         top_p=0.95
     )
-    responses = outputs[:, prompt_length:]
+    responses = outputs[:, prompt_length + 1:]
     
     del tokenized
     torch.cuda.empty_cache()
@@ -34,8 +34,8 @@ def process_batch(tokenizer, model, ref_model, reward_model, messages, device, g
         ref_logits = ref_model(outputs).logits[:, prompt_length:]
     logits = model(outputs).logits[:, prompt_length:]
                     
-    log_probs = torch.log_softmax(logits, dim=-1)
-    ref_log_probs = torch.log_softmax(ref_logits, dim=-1)
+    log_probs = torch.log_softmax(logits, dim=-1)[:, :-1, :]
+    ref_log_probs = torch.log_softmax(ref_logits, dim=-1)[:, :-1, :]
                 
     sampled_log_probs = log_probs.gather(2, responses.unsqueeze(-1)).squeeze(-1).sum(-1)
     sampled_ref_log_probs = ref_log_probs.gather(2, responses.unsqueeze(-1)).squeeze(-1).sum(-1)
