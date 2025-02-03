@@ -14,7 +14,8 @@ def prepare_messages(batch, tokenizer):
 
 def process_batch(tokenizer, model, ref_model, reward_model, messages, device, gen_length=256):
     tokenized = tokenizer(messages, return_tensors="pt", padding=True).to(device)
-    if tokenized["input_ids"].shape[1] > 1024:
+    prompt_length = tokenized["input_ids"].shape[1]
+    if prompt_length > 1024:
         return None, None, None, None
     outputs = model.generate(
         **tokenized,
@@ -23,19 +24,21 @@ def process_batch(tokenizer, model, ref_model, reward_model, messages, device, g
         top_k=50,
         top_p=0.95
     )
+    responses = outputs[:, prompt_length:]
+    
     del tokenized
     torch.cuda.empty_cache()
     gc.collect()
     
     with torch.no_grad():
-        ref_logits = ref_model(outputs).logits
-    logits = model(outputs).logits
+        ref_logits = ref_model(outputs).logits[:, prompt_length:]
+    logits = model(outputs).logits[:, prompt_length:]
                     
     log_probs = torch.log_softmax(logits, dim=-1)
     ref_log_probs = torch.log_softmax(ref_logits, dim=-1)
                 
-    sampled_log_probs = log_probs.gather(2, outputs.unsqueeze(-1)).squeeze(-1).sum(-1)
-    sampled_ref_log_probs = ref_log_probs.gather(2, outputs.unsqueeze(-1)).squeeze(-1).sum(-1)
+    sampled_log_probs = log_probs.gather(2, responses.unsqueeze(-1)).squeeze(-1).sum(-1)
+    sampled_ref_log_probs = ref_log_probs.gather(2, responses.unsqueeze(-1)).squeeze(-1).sum(-1)
     kl = (sampled_log_probs - sampled_ref_log_probs).detach()
     
     del ref_logits, ref_log_probs, sampled_ref_log_probs
@@ -49,7 +52,7 @@ def process_batch(tokenizer, model, ref_model, reward_model, messages, device, g
     return outputs, sampled_log_probs, kl, rewards
 
 
-def run_validation(val_loader, tokenizer, model, ref_model, reward_model, device):
+def run_validation(val_loader, tokenizer, model, ref_model, reward_model, device, episode):
     total_reward = 0.0
     total_kl = 0.0
     count = 0
@@ -60,6 +63,8 @@ def run_validation(val_loader, tokenizer, model, ref_model, reward_model, device
         for val_batch in tqdm(val_loader, desc="Validation"):
             messages = prepare_messages(val_batch, tokenizer)
             outputs, _, kl_val, rewards_val = process_batch(tokenizer, model, ref_model, reward_model, messages, device)
+            if outputs is None:
+                continue
             total_reward += rewards_val.mean().item()
             total_kl += kl_val.mean().item()
             count += 1
@@ -71,6 +76,7 @@ def run_validation(val_loader, tokenizer, model, ref_model, reward_model, device
     mean_kl = total_kl / count
     print(f"Validation - Avg. Reward: {mean_reward:.4f}, Avg. KL: {mean_kl:.4f}")
     wandb.log({
+        "episode": episode,
         "val/avg_reward": mean_reward,
         "val/avg_kl": mean_kl,
         "val/generations_table": table
@@ -96,7 +102,7 @@ def reinforce_finetune(
     hf_model_id: str = "flypew/rlhf_model"
 ):
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer = AutoTokenizer.from_pretrained(model_name, padding_side="left")
         
     model = AutoModelForCausalLM.from_pretrained(model_name).to(device)
     model.train()
@@ -122,8 +128,13 @@ def reinforce_finetune(
     running_reward_sum = 0.0
     running_count = 0
 
+    train_iterator = iter(train_loader)
     for step in range(num_steps):
-        batch = next(iter(train_loader))
+        try:
+            batch = next(train_iterator)
+        except StopIteration:
+            train_iterator = iter(train_loader)
+            batch = next(train_iterator)
         
         messages = prepare_messages(batch, tokenizer)
         
@@ -152,9 +163,9 @@ def reinforce_finetune(
         episode = (step + 1) * batch_size
         wandb.log({
             "episode": episode,
-            "train/avg_reward": batch_mean_reward,
+            "train/avg_reward": rewards.mean().item(),
             "train/avg_kl": kl.mean().item(),
-            "train/avg_rlhf_reward": rlhf_reward.mean().item()
+            "train/avg_rlhf_reward": batch_mean_reward,
         })
 
         if (step + 1) % gradient_accumulation_steps == 0:
@@ -162,7 +173,7 @@ def reinforce_finetune(
             optimizer.zero_grad()
 
         if (step + 1) % validate_every == 0:
-            run_validation(val_loader, tokenizer, model, ref_model, reward_model, device)
+            run_validation(val_loader, tokenizer, model, ref_model, reward_model, device, episode)
 
         print('-' * 50)
         
@@ -179,3 +190,4 @@ def reinforce_finetune(
     if wandb_api_key and wandb_project:
         wandb.finish()
 
+                

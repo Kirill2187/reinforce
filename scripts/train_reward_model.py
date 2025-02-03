@@ -17,7 +17,7 @@ def main():
     set_all_seeds(42)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    tokenizer = AutoTokenizer.from_pretrained(args.checkpoint)
+    tokenizer = AutoTokenizer.from_pretrained(args.checkpoint, padding_side="left")
     reward_model = AutoModelForSequenceClassification.from_pretrained(
         args.checkpoint, num_labels=1
     ).to(device)
