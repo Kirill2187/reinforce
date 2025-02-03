@@ -7,6 +7,7 @@ from tqdm import tqdm
 import wandb
 import gc
 
+
 def prepare_messages(batch, tokenizer):
     messages = [[{"role": "user", "content": prompt}] for prompt in batch['prompt']]
     return list(map(lambda x: tokenizer.apply_chat_template(x, tokenize=False), messages))
@@ -15,8 +16,10 @@ def prepare_messages(batch, tokenizer):
 def process_batch(tokenizer, model, ref_model, reward_model, messages, device, gen_length=256):
     tokenized = tokenizer(messages, return_tensors="pt", padding=True).to(device)
     prompt_length = tokenized["input_ids"].shape[1]
+    # Удалим особо длинные промпты чтобы избежать ООМ
     if prompt_length > 1024:
         return None, None, None, None
+    
     outputs = model.generate(
         **tokenized,
         max_length=tokenized["input_ids"].shape[1] + gen_length,
@@ -39,13 +42,16 @@ def process_batch(tokenizer, model, ref_model, reward_model, messages, device, g
                 
     sampled_log_probs = log_probs.gather(2, responses.unsqueeze(-1)).squeeze(-1).sum(-1)
     sampled_ref_log_probs = ref_log_probs.gather(2, responses.unsqueeze(-1)).squeeze(-1).sum(-1)
+    
+    # Не хотим чтобы градиент протекал через sampled_log_probs тк KL - часть награды
     kl = (sampled_log_probs - sampled_ref_log_probs).detach()
     
     del ref_logits, ref_log_probs, sampled_ref_log_probs
     torch.cuda.empty_cache()
     gc.collect()
     
-    rewards = reward_model(outputs).logits
+    with torch.no_grad():
+        rewards = reward_model(outputs).logits
     if rewards.dim() > 1 and rewards.shape[-1] == 1:
         rewards = rewards.squeeze(-1)
         
