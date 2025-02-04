@@ -58,19 +58,22 @@ def process_batch(tokenizer, model, ref_model, reward_model, messages, device, m
     return outputs, sampled_log_probs, kl, rewards
 
 
-def run_validation(val_loader, tokenizer, model, ref_model, reward_model, device, episode, max_completion_length=512):
+def run_validation(val_loader, tokenizer, model, ref_model, reward_model, device, episode, wandb_log=True):
     total_reward = 0.0
     total_kl = 0.0
     count = 0
 
     table = wandb.Table(columns=["prompt", "generation"])
     model.eval()
+    
+    rewards = []
     with torch.no_grad():
         for val_batch in tqdm(val_loader, desc="Validation"):
             messages = prepare_messages(val_batch, tokenizer)
-            outputs, _, kl_val, rewards_val = process_batch(tokenizer, model, ref_model, reward_model, messages, device, max_completion_length)
+            outputs, _, kl_val, rewards_val = process_batch(tokenizer, model, ref_model, reward_model, messages, device)
             if outputs is None:
                 continue
+            rewards.extend(rewards_val.cpu().numpy().tolist())
             total_reward += rewards_val.mean().item()
             total_kl += kl_val.mean().item()
             count += 1
@@ -81,13 +84,16 @@ def run_validation(val_loader, tokenizer, model, ref_model, reward_model, device
     mean_reward = total_reward / count
     mean_kl = total_kl / count
     print(f"Validation - Avg. Reward: {mean_reward:.4f}, Avg. KL: {mean_kl:.4f}")
-    wandb.log({
-        "episode": episode,
-        "val/avg_reward": mean_reward,
-        "val/avg_kl": mean_kl,
-        "val/generations_table": table
-    })
+    if wandb_log:
+        wandb.log({
+            "episode": episode,
+            "val/avg_reward": mean_reward,
+            "val/avg_kl": mean_kl,
+            "val/generations_table": table
+        })
     model.train()
+    
+    return rewards
 
 
 def reinforce_finetune(
