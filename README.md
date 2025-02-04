@@ -4,5 +4,5 @@
 
 ## Finetuning
 
-Реализация REINFORCE в [reinforce.py](scripts/reinforce.py), а скрипт для запуска обучения в [finetune.py](scripts/finetune.py). Пока не получилось завести алгоритм - награда, увы, не растет: https://api.wandb.ai/links/tlab-task/tl9rrplh.
+Реализация REINFORCE в [reinforce.py](scripts/reinforce.py), а скрипт для запуска обучения в [finetune.py](scripts/finetune.py). Графики обучения: https://api.wandb.ai/links/tlab-task/tl9rrplh. Не уверен, что реализация полностью корректная, обучение очень слабенькое, но все таки на валидации средняя награда немного увеличивается (статистически значимо) - это проверяю в [validation.ipynb](validation.ipynb)
 
